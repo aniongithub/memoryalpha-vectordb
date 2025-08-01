@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  ollama:
+    build:
+      context: ./ollama
+      dockerfile: ollama.Dockerfile
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - odn
+
+  lcars:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lcars
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+    volumes:
+      - .:/workspace/memoryalpha_rag
+      - ./data/enmemoryalpha_db:/data/enmemoryalpha_db
+    command: ["cli"]  # or "api"
+    stdin_open: true
+    tty: true
+    ports:
+      - "8000:8000"  # for REST API mode
+    networks:
+      - odn
+
+volumes:
+  ollama_data:
+
+networks:
+  odn:
+    driver: bridge

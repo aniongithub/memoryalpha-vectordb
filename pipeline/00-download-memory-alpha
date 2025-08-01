@@ -1,0 +1,32 @@
+#!/bin/bash
+
+MEMORYALPHA_DUMP_URL="http://s3.amazonaws.com/wikia_xml_dumps/e/en/enmemoryalpha_pages_current.xml.7z"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="$SCRIPT_DIR/../data"
+OUTPUT_FILE="$OUTPUT_DIR/enmemoryalpha_pages_current.xml"
+mkdir -p "$OUTPUT_DIR"
+
+if [ -f "$OUTPUT_FILE" ]; then
+    echo "✅ Memory Alpha dump already exists at $OUTPUT_FILE, skipping download."
+    exit 0
+fi
+
+TMPFILE=$(mktemp /tmp/memoryalpha_dump.XXXXXX.7z)
+echo "🌐 Downloading Memory Alpha dump..."
+wget "$MEMORYALPHA_DUMP_URL" -O "$TMPFILE"
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to download Memory Alpha dump."
+    rm -f "$TMPFILE"
+    exit 1
+fi
+
+echo "🗜️ Extracting Memory Alpha dump..."
+7z e -y -so "$TMPFILE" > "$OUTPUT_FILE"
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to extract Memory Alpha dump."
+    rm -f "$TMPFILE"
+    rm -f "$OUTPUT_FILE"
+    exit 1
+fi
+rm -f "$TMPFILE"
+echo "✅ Memory Alpha dump downloaded and extracted to $OUTPUT_FILE"

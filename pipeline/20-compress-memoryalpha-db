@@ -1,0 +1,19 @@
+#!/bin/bash
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
+DB_DIR="$SCRIPT_DIR/../data/enmemoryalpha_db"
+ARCHIVE="$SCRIPT_DIR/../data/enmemoryalpha_db.tar.gz"
+
+if [ ! -d "$DB_DIR" ]; then
+    echo "❌ ChromaDB directory not found: $DB_DIR"
+    exit 1
+fi
+
+echo "📦 Compressing ChromaDB directory..."
+tar czf "$ARCHIVE" -C "$(dirname "$DB_DIR")" "$(basename "$DB_DIR")"
+if [ $? -ne 0 ]; then
+    echo "❌ Compression failed."
+    exit 1
+fi
+
+echo "✅ Compressed ChromaDB to $ARCHIVE"
