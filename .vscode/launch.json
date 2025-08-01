@@ -9,6 +9,9 @@
             "type": "debugpy",
             "request": "launch",
             "program": "lcars/cli.py",
+            "args": [
+                "--show-performance"
+            ],
             "console": "integratedTerminal"
         }
     ]
