@@ -12,6 +12,8 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - odn
+    env_file:
+      - .env
 
   lcars:
     build:

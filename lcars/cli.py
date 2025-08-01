@@ -135,6 +135,7 @@ You are the ship's computer - authoritative, precise, and helpful.
 Always begin responses with "Working..." followed by your analysis.
 
 Instructions:
+- Use <think> tags when you need to reason through complex information or analyze multiple sources
 - Use relevant information from the Memory Alpha records provided
 - Be thorough but concise, always use present tense.
 - Never mention the context or allude to the fact that you are an LLM using a database.
@@ -148,6 +149,7 @@ Instructions:
 - If insufficient data exists, state: "Unable to comply" or "Insufficient data in Memory Alpha records."
 - Do not break character and say things like "The context does not specify" or "The records do not mention" or "In the Star Trek universe"
 - Condense the answer into a single paragraph, preferably in chronological order or logical flow.
+- Remove all all references to "Memory Alpha" or "the database" or "the records" in your final answer.
 
 Format your response as:
 Working...
@@ -181,6 +183,9 @@ Please analyze the above data and provide an in-character response."""
             
             if response.status_code == 200:
                 full_response = ""
+                thinking_mode = False
+                thinking_buffer = ""
+                
                 print("🤖 LCARS: ", end="", flush=True)
                 
                 # Process streaming response
@@ -190,8 +195,31 @@ Please analyze the above data and provide an in-character response."""
                             chunk = json.loads(line.decode('utf-8'))
                             if 'response' in chunk:
                                 token = chunk['response']
-                                print(token, end="", flush=True)
                                 full_response += token
+                                
+                                # Handle thinking tokens
+                                if thinking_mode:
+                                    thinking_buffer += token
+                                    if "</think>" in thinking_buffer:
+                                        # End of thinking, show "thinking" and start regular output
+                                        print("thinking...", end="", flush=True)
+                                        thinking_mode = False
+                                        # Extract any content after </think>
+                                        remaining = thinking_buffer.split("</think>", 1)
+                                        if len(remaining) > 1 and remaining[1]:
+                                            print(remaining[1], end="", flush=True)
+                                        thinking_buffer = ""
+                                elif "<think>" in token:
+                                    # Start of thinking mode
+                                    thinking_mode = True
+                                    thinking_buffer = token
+                                    # Print any content before <think>
+                                    before_think = token.split("<think>", 1)[0]
+                                    if before_think:
+                                        print(before_think, end="", flush=True)
+                                else:
+                                    # Regular token, print it
+                                    print(token, end="", flush=True)
                                 
                             # Check if this is the final chunk
                             if chunk.get('done', False):
