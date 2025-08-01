@@ -22,13 +22,20 @@ from chromadb.config import Settings
 class MemoryAlphaRAG:
     def __init__(self, 
                  chroma_db_path: str = "/data/enmemoryalpha_db",
-                 ollama_url: str = "http://ollama:11434",
-                 model: str = "qwen2:0.5b"):
+                 ollama_url: str = None,
+                 model: str = None):
         """Initialize the Memory Alpha RAG system."""
         
         self.chroma_db_path = chroma_db_path
-        self.ollama_url = ollama_url
-        self.model = model
+        self.ollama_url = ollama_url or os.getenv("OLLAMA_URL")
+        self.model = model or os.getenv("DEFAULT_MODEL")
+        
+        if not self.ollama_url:
+            print("❌ Error: OLLAMA_URL environment variable is required")
+            sys.exit(1)
+        if not self.model:
+            print("❌ Error: DEFAULT_MODEL environment variable is required")
+            sys.exit(1)
         
         # Initialize ChromaDB client
         try:
@@ -261,11 +268,11 @@ def main():
                        default="/data/enmemoryalpha_db",
                        help="Path to ChromaDB database")
     parser.add_argument("--ollama-url", 
-                       default=os.getenv("OLLAMA_URL", "http://ollama:11434"),
-                       help="Ollama API URL")
+                       default=os.getenv("OLLAMA_URL"),
+                       help="Ollama API URL (uses OLLAMA_URL env var)")
     parser.add_argument("--model", 
-                       default=os.getenv("DEFAULT_MODEL", "qwen2:0.5b"),
-                       help="Ollama model to use")
+                       default=os.getenv("DEFAULT_MODEL"),
+                       help="Ollama model to use (uses DEFAULT_MODEL env var)")
     parser.add_argument("--question", "-q",
                        help="Ask a single question and exit")
     
