@@ -1,0 +1,27 @@
+name: Release Pipeline and Artifact
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  pipeline-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build and run pipeline in Docker
+        run: |
+          chmod +x data-pipeline-docker.sh
+          ./data-pipeline-docker.sh
+      - name: Upload compressed ChromaDB artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: data/enmemoryalpha_db.tar.gz
+          asset_name: enmemoryalpha_db.tar.gz
+          asset_content_type: application/gzip

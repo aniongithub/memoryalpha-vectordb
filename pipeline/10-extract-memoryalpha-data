@@ -22,7 +22,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 CHROMA_DB_DIR = os.path.join(SCRIPT_DIR, "../data/enmemoryalpha_db")
 MAX_PAGES = os.getenv("MAX_PAGES", -1) # Get the max pages to process from the environment
 
-
 def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
     # Set up ChromaDB persistent client and collection
     client = chromadb.PersistentClient(path=chroma_db_dir, settings=Settings(allow_reset=True))
