@@ -1,3 +1,6 @@
+# Memory Alpha Vector DB Pipeline 🖖
+
+[![CI Pipeline](https://github.com/aniongithub/memoryalpha_chromadb/actions/workflows/ci-pipeline.yml/badge.svg?branch=main)](https://github.com/aniongithub/memoryalpha_rag/actions/workflows/ci-pipeline.yml)
 
 # Memory Alpha Vector DB Pipeline 🖖
 
