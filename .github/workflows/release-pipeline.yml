@@ -7,6 +7,8 @@ on:
 jobs:
   pipeline-release:
     runs-on: ubuntu-latest
+    env:
+      MAX_PAGES: -1
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -4,6 +4,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 set -euo pipefail
 
+# By default 100 pages, can be overridden by setting MAX_PAGES in the environment.
+# Set to -1 to process all pages.
+MAX_PAGES="${MAX_PAGES:-100}"
+
 pushd "$SCRIPT_DIR"
 trap popd EXIT
 
@@ -16,4 +20,4 @@ else
   DOCKER_RUN_FLAGS=""
 fi
 
-docker run --rm $DOCKER_RUN_FLAGS -v "$SCRIPT_DIR/data":/data memoryalpha-pipeline
+docker run --rm $DOCKER_RUN_FLAGS -e MAX_PAGES="$MAX_PAGES" -v "$SCRIPT_DIR/data":/data memoryalpha-pipeline
