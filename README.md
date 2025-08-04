@@ -1,6 +1,6 @@
 # Memory Alpha Vector DB Pipeline 🖖
 
-[![CI Pipeline](https://github.com/aniongithub/memoryalpha_chromadb/actions/workflows/ci-pipeline.yml/badge.svg?branch=main)](https://github.com/aniongithub/memoryalpha_rag/actions/workflows/ci-pipeline.yml)
+[![CI Pipeline](https://github.com/aniongithub/memoryalpha_chromadb/actions/workflows/ci-pipeline.yml/badge.svg?branch=main)](https://github.com/aniongithub/memoryalpha_chromadb/actions/workflows/ci-pipeline.yml)
 
 This repository provides a reproducible pipeline for downloading, parsing, and publishing up-to-date vector database (ChromaDB) dumps of the complete Star Trek Memory Alpha wiki. These vector DB artifacts are intended for use in downstream projects, such as search, RAG, or LLM applications.
 
@@ -17,7 +17,7 @@ This repository provides a reproducible pipeline for downloading, parsing, and p
 
 The easiest way to use the Memory Alpha vector database is to download the latest release artifact:
 
-1. Go to the [Releases page](https://github.com/aniongithub/memoryalpha_rag/releases)
+1. Go to the [Releases page](https://github.com/aniongithub/memoryalpha_chromadb/releases)
 2. Download `enmemoryalpha_db.tar.gz`
 3. Extract it:
 
@@ -62,7 +62,7 @@ for i, doc in enumerate(results["documents"][0]):
 ### 1. Clone and Open
 
 ```bash
-git clone https://github.com/aniongithub/memoryalpha_rag.git
+git clone https://github.com/aniongithub/memoryalpha_chromadb.git
 cd memoryalpha_rag
 ```
 
