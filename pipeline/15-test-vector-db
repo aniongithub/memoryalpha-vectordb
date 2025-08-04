@@ -19,13 +19,15 @@ try:
     print(f"✅ ChromaDB loaded successfully. Document count: {count}")
     import random
     if count > 0:
-        # Get all IDs, pick a random one, then fetch and print it
-        all_ids = collection.get(include=["ids"])['ids']
-        rand_id = random.choice(all_ids)
-        result = collection.get(ids=[rand_id])
-        print(f"Random doc ID: {result['ids'][0]}")
-        print(f"Random doc title: {result['metadatas'][0].get('title')}")
-        print(f"Random doc content: {result['documents'][0]}")
+        # Get all documents to pick a random one
+        all_docs = collection.get(include=["metadatas", "documents"])
+        rand_index = random.randint(0, len(all_docs['ids']) - 1)
+        result_id = all_docs['ids'][rand_index]
+        result_metadata = all_docs['metadatas'][rand_index]
+        result_document = all_docs['documents'][rand_index]
+        print(f"Random doc ID: {result_id}")
+        print(f"Random doc title: {result_metadata.get('title', 'N/A')}")
+        print(f"Random doc content: {result_document}")
     else:
         print("⚠️  No documents found in the collection.")
 except Exception as e:
