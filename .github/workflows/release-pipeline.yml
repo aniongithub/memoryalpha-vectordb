@@ -19,11 +19,7 @@ jobs:
           chmod +x data-pipeline-docker.sh
           ./data-pipeline-docker.sh
       - name: Upload compressed ChromaDB artifact
-        uses: actions/upload-release-asset@v1
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} data/enmemoryalpha_db.tar.gz --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: data/enmemoryalpha_db.tar.gz
-          asset_name: enmemoryalpha_db.tar.gz
-          asset_content_type: application/gzip
