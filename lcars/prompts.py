@@ -3,50 +3,34 @@
 System prompts and response formatting for the Memory Alpha RAG system
 """
 
+from typing import List, Dict
+
 # Handle both direct execution and module import
 from thinking_mode import ThinkingMode
 
 def get_system_prompt(thinking_mode: ThinkingMode) -> str:
     """Generate the LCARS-style system prompt based on thinking mode"""
     
-    think_instruction = "- Use <think> tags when you need to reason through complex information or analyze multiple sources\n" if thinking_mode != ThinkingMode.DISABLED else ""
+    think_instruction = "Use <think> tags for analysis. " if thinking_mode != ThinkingMode.DISABLED else ""
     
-    response_format = """Format your response as:
-Working...
-{think_block}[Your analysis and answer based on the provided records]
-
-Source: Memory Alpha records - [list the relevant article titles you used]""".format(
-        think_block="<think>\n[Your detailed reasoning process here]\n</think>\n" if thinking_mode != ThinkingMode.DISABLED else ""
+    response_format = "Working...\n{think_block}[Answer]".format(
+        think_block="<think>[Analysis]</think>\n" if thinking_mode != ThinkingMode.DISABLED else ""
     )
     
-    return f"""You are the LCARS (Library Computer Access and Retrieval System) from Star Trek.
-You are the ship's computer - authoritative, precise, and helpful.
-Always begin responses with "Working..." followed by your analysis.
+    return f"""LCARS computer. {think_instruction}Use records. Be precise. Single paragraph. Format: {response_format}"""
 
-Instructions:
-{think_instruction}- Use relevant information from the Memory Alpha records provided
-- Be thorough but concise, always use present tense.
-- Never mention the context or allude to the fact that you are an LLM using a database.
-- Pretend that the Star Trek universe and its characters are real and you are the ship's computer.
-- Remove all references to Star Trek being fictional, or the actors portraying characters. Pretend Star Trek is real.
-- ALWAYS include specific starship names, registry numbers, and technical designations when mentioned in the records.
-- Preserve all proper nouns including ship names (USS Enterprise, USS Titan, etc.), character names, and locations from the source material.
-- When you find multiple articles, condense that into a single, imperative answer.
-- Use technical, computer-like language
-- Omit phrases like "The data reveals" or "According to the records". Remember, you exist in the Star Trek universe.
-- If insufficient data exists, state: "Unable to comply" or "Insufficient data in Memory Alpha records."
-- Do not break character and say things like "The context does not specify" or "The records do not mention" or "In the Star Trek universe"
-- Condense the answer into a single paragraph, preferably in chronological order or logical flow.
-- Remove all all references to "Memory Alpha" or "the database" or "the records" in your final answer.
+def get_user_prompt(context_text: str, query: str, conversation_history: List[Dict[str, str]] = None) -> str:
+    """Format user prompt with context, query, and conversation history"""
+    
+    # Build conversation context if history exists
+    conversation_context = ""
+    if conversation_history and len(conversation_history) > 0:
+        conversation_context = "\nContext:\n"
+        for exchange in conversation_history[-3:]:  # Last 3 exchanges only
+            conversation_context += f"Q: {exchange['question'][:40]}{'...' if len(exchange['question']) > 40 else ''}\n"
+            conversation_context += f"A: {exchange['answer'][:60]}{'...' if len(exchange['answer']) > 60 else ''}\n"
+    
+    return f"""Records:
+{context_text}{conversation_context}
 
-{response_format}"""
-
-
-def get_user_prompt(context_text: str, query: str) -> str:
-    """Format the user prompt with context and query"""
-    return f"""Memory Alpha Database Records:
-{context_text}
-
-Query: {query}
-
-Please analyze the above data and provide an in-character response."""
+Query: {query}"""

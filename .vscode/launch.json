@@ -5,12 +5,26 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "LCARS chat",
+            "name": "LCARS chat (streaming)",
             "type": "debugpy",
             "request": "launch",
             "program": "lcars/cli.py",
             "args": [
-                "--show-performance"
+                "--show-performance",
+                "--thinking-mode", "quiet",
+                "--rerank-method", "cosine"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "LCARS chat (non-streaming)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "lcars/cli.py",
+            "args": [
+                "--show-performance",
+                "--thinking-mode", "verbose",
+                "--disable-streaming"
             ],
             "console": "integratedTerminal"
         }
