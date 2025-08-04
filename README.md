@@ -2,8 +2,6 @@
 
 [![CI Pipeline](https://github.com/aniongithub/memoryalpha_chromadb/actions/workflows/ci-pipeline.yml/badge.svg?branch=main)](https://github.com/aniongithub/memoryalpha_rag/actions/workflows/ci-pipeline.yml)
 
-# Memory Alpha Vector DB Pipeline 🖖
-
 This repository provides a reproducible pipeline for downloading, parsing, and publishing up-to-date vector database (ChromaDB) dumps of the complete Star Trek Memory Alpha wiki. These vector DB artifacts are intended for use in downstream projects, such as search, RAG, or LLM applications.
 
 ## Features
