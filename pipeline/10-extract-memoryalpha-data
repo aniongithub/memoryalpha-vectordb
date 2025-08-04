@@ -5,6 +5,9 @@ import os
 from lxml import etree
 import mwparserfromhell
 import re
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+import multiprocessing
 
 import sys
 import pysqlite3
@@ -22,66 +25,148 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 CHROMA_DB_DIR = os.path.join(SCRIPT_DIR, "../data/enmemoryalpha_db")
 MAX_PAGES = int(os.getenv("MAX_PAGES", -1)) # Get the max pages to process from the environment and cast to int
 
+# Global variables for thread coordination
+collection_lock = Lock()
+count_lock = Lock()
+global_count = 0
+
+def process_page(page_elem):
+    """Process a single page element and return the processed data"""
+    title_elem = page_elem.find("{http://www.mediawiki.org/xml/export-0.11/}title")
+    title = title_elem.text if title_elem is not None else ""
+    text_elem = page_elem.find(".//{http://www.mediawiki.org/xml/export-0.11/}text")
+    raw_text = text_elem.text if text_elem is not None else ""
+
+    # Skip unwanted pages
+    if not raw_text or raw_text.strip().lower().startswith("#redirect"):
+        return None
+    if (title.lower().startswith(("file:", "user:", "talk:", "user talk:", 
+                                 "memory alpha:", "memory alpha talk:", 
+                                 "mediawiki:", "mediawiki talk:", "template:", 
+                                 "template talk:", "category:", "category talk:"))):
+        return None
+    
+    try:
+        clean_text = mwparserfromhell.parse(raw_text).strip_code().strip()
+    except Exception as e:
+        print(f"⚠️  Error parsing {title}: {e}")
+        return None
+    
+    if len(clean_text) < 500:
+        return None
+
+    # Return the processed data
+    return {
+        'title': title,
+        'clean_text': clean_text
+    }
+
+def add_batch_to_collection(collection, batch_data):
+    """Add a batch of processed data to ChromaDB collection"""
+    global global_count
+    
+    batch_docs = []
+    batch_metadatas = []
+    batch_ids = []
+    
+    with count_lock:
+        for data in batch_data:
+            base_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', data['title'])[:48] or "untitled"
+            safe_id = f"{base_id}_{global_count}"
+            batch_ids.append(safe_id)
+            batch_docs.append(data['clean_text'])
+            batch_metadatas.append({"title": data['title']})
+            global_count += 1
+    
+    with collection_lock:
+        collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
+    
+    return len(batch_data)
+
 def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
+    global global_count
+    global_count = 0
+    
     # Set up ChromaDB persistent client and collection
     client = chromadb.PersistentClient(path=chroma_db_dir, settings=Settings(allow_reset=True))
     collection = client.get_or_create_collection("memoryalpha")
 
+    # Determine optimal number of workers
+    num_workers = multiprocessing.cpu_count()
+    print(f"🚀 Using {num_workers} worker threads for processing")
+    
     context = etree.iterparse(xml_path, tag="{http://www.mediawiki.org/xml/export-0.11/}page", events=("end",), recover=True)
-    count = 0
-    batch_docs = []
-    batch_metadatas = []
-    batch_ids = []
+    
     BATCH_SIZE = 100
+    PROCESSING_BATCH_SIZE = num_workers * 4  # Process multiple batches in parallel
+    
+    page_batch = []
+    total_processed = 0
+    
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        for _, elem in context:
+            page_batch.append(elem)
+            
+            # Process pages in batches
+            if len(page_batch) >= PROCESSING_BATCH_SIZE:
+                # Submit batch for parallel processing
+                future_results = [executor.submit(process_page, page) for page in page_batch]
+                
+                # Collect results
+                processed_data = []
+                for future in future_results:
+                    result = future.result()
+                    if result:
+                        processed_data.append(result)
+                
+                # Add to ChromaDB in batches
+                while processed_data:
+                    current_batch = processed_data[:BATCH_SIZE]
+                    processed_data = processed_data[BATCH_SIZE:]
+                    
+                    if current_batch:
+                        added_count = add_batch_to_collection(collection, current_batch)
+                        total_processed += added_count
+                        print(f"📄 Processed {total_processed} pages...")
+                
+                # Clear processed pages
+                for page in page_batch:
+                    page.clear()
+                page_batch = []
+                
+                # Check if we've reached the max pages limit
+                if max_pages != -1 and total_processed >= max_pages:
+                    break
+        
+        # Process remaining pages
+        if page_batch and (max_pages == -1 or total_processed < max_pages):
+            future_results = [executor.submit(process_page, page) for page in page_batch]
+            
+            processed_data = []
+            for future in future_results:
+                result = future.result()
+                if result:
+                    processed_data.append(result)
+            
+            # Limit to max_pages if specified
+            if max_pages != -1:
+                remaining = max_pages - total_processed
+                processed_data = processed_data[:remaining]
+            
+            # Add remaining data in batches
+            while processed_data:
+                current_batch = processed_data[:BATCH_SIZE]
+                processed_data = processed_data[BATCH_SIZE:]
+                
+                if current_batch:
+                    added_count = add_batch_to_collection(collection, current_batch)
+                    total_processed += added_count
+            
+            # Clear remaining pages
+            for page in page_batch:
+                page.clear()
 
-    for _, elem in context:
-        title_elem = elem.find("{http://www.mediawiki.org/xml/export-0.11/}title")
-        title = title_elem.text if title_elem is not None else ""
-        text_elem = elem.find(".//{http://www.mediawiki.org/xml/export-0.11/}text")
-        raw_text = text_elem.text if text_elem is not None else ""
-
-        if not raw_text or raw_text.strip().lower().startswith("#redirect"):
-            elem.clear()
-            continue
-        if (title.lower().startswith(("file:", "user:", "talk:", "user talk:", 
-                                     "memory alpha:", "memory alpha talk:", 
-                                     "mediawiki:", "mediawiki talk:", "template:", 
-                                     "template talk:", "category:", "category talk:"))):
-            elem.clear()
-            continue
-        try:
-            clean_text = mwparserfromhell.parse(raw_text).strip_code().strip()
-        except Exception as e:
-            print(f"⚠️  Error parsing {title}: {e}")
-            elem.clear()
-            continue
-        if len(clean_text) < 500:
-            elem.clear()
-            continue
-
-        # Use a safe unique id for ChromaDB (sanitized title + count for uniqueness)
-        base_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', title)[:48] or "untitled"
-        safe_id = f"{base_id}_{count}"
-        batch_ids.append(safe_id)
-        batch_docs.append(clean_text)
-        batch_metadatas.append({"title": title})
-        count += 1
-        elem.clear()
-
-        if len(batch_docs) >= BATCH_SIZE:
-            collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
-            batch_docs, batch_metadatas, batch_ids = [], [], []
-            print(f"📄 Processed {count} pages...")
-
-        # Check if we've reached the max pages limit, -1 means no limit
-        if max_pages != -1 and count >= max_pages:
-            break
-
-    # Add any remaining docs
-    if batch_docs:
-        collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
-
-    print(f"✅ Extracted and stored {count} pages in ChromaDB at: {chroma_db_dir}")
+    print(f"✅ Extracted and stored {total_processed} pages in ChromaDB at: {chroma_db_dir}")
 
 # Run it
 extract_and_store_chromadb(INPUT_XML, CHROMA_DB_DIR, MAX_PAGES)
