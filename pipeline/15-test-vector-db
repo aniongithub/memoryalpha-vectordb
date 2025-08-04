@@ -1,0 +1,35 @@
+#! /usr/bin/env python3
+
+import os
+import sys
+import pysqlite3
+sys.modules["sqlite3"] = pysqlite3
+
+import chromadb
+from chromadb.config import Settings
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CHROMA_DB_DIR = os.path.join(SCRIPT_DIR, "../data/enmemoryalpha_db")
+
+# Try to connect to the persistent ChromaDB
+try:
+    client = chromadb.PersistentClient(path=CHROMA_DB_DIR, settings=Settings(allow_reset=True))
+    collection = client.get_or_create_collection("memoryalpha")
+    count = collection.count()
+    print(f"✅ ChromaDB loaded successfully. Document count: {count}")
+    import random
+    if count > 0:
+        # Get all documents to pick a random one
+        all_docs = collection.get(include=["metadatas", "documents"])
+        rand_index = random.randint(0, len(all_docs['ids']) - 1)
+        result_id = all_docs['ids'][rand_index]
+        result_metadata = all_docs['metadatas'][rand_index]
+        result_document = all_docs['documents'][rand_index]
+        print(f"Random doc ID: {result_id}")
+        print(f"Random doc title: {result_metadata.get('title', 'N/A')}")
+        print(f"Random doc content: {result_document}")
+    else:
+        print("⚠️  No documents found in the collection.")
+except Exception as e:
+    print(f"❌ Failed to load or query ChromaDB: {e}")
+    sys.exit(1)
