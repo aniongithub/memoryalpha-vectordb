@@ -3,16 +3,16 @@
 {
 	"name": "Python 3",
 	"build": {
-		"dockerfile": "../Dockerfile",
+		"dockerfile": "../pipeline/pipeline.Dockerfile",
 		"context": ".."
 	},
 	"overrideCommand": true,
-	"remoteUser": "vscode",
 	"features": {
 		"ghcr.io/nils-geistmann/devcontainers-features/create-remote-user:0": {
 			"passwordLessSudo": true
 		}
 	},
+	"remoteUser": "vscode",
 	"customizations": {
         "vscode": {
             "settings": {

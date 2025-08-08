@@ -8,6 +8,13 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 import multiprocessing
+import requests
+from urllib.parse import quote, unquote
+import hashlib
+from pathlib import Path
+from sentence_transformers import SentenceTransformer
+from PIL import Image
+import numpy as np
 
 import sys
 import pysqlite3
@@ -23,12 +30,124 @@ OUTPUT_DIR = os.path.join(SCRIPT_DIR, "../data")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 CHROMA_DB_DIR = os.path.join(SCRIPT_DIR, "../data/enmemoryalpha_db")
+IMAGES_DIR = os.path.join(SCRIPT_DIR, "../data/images")
+os.makedirs(IMAGES_DIR, exist_ok=True)
+
 MAX_PAGES = int(os.getenv("MAX_PAGES", -1)) # Get the max pages to process from the environment and cast to int
 
 # Global variables for thread coordination
 collection_lock = Lock()
 count_lock = Lock()
+download_lock = Lock()
+embedding_lock = Lock()
 global_count = 0
+downloaded_images = set()  # Track downloaded images to avoid duplicates
+clip_model = None  # Will be initialized once
+
+def initialize_clip_model():
+    """Initialize the CLIP model once"""
+    global clip_model
+    if clip_model is None:
+        print("🤖 Loading CLIP model...")
+        clip_model = SentenceTransformer('clip-ViT-B-32')
+        print("✅ CLIP model loaded")
+    return clip_model
+
+def generate_image_embedding(image_path):
+    """Generate CLIP embedding for an image"""
+    try:
+        model = initialize_clip_model()
+        
+        # Skip SVG files as PIL can't handle them well
+        if image_path.lower().endswith('.svg'):
+            print(f"⚠️  Skipping SVG file: {image_path}")
+            return None
+            
+        image = Image.open(image_path).convert('RGB')
+        with embedding_lock:
+            embedding = model.encode(image)
+        return embedding.tolist()  # Convert numpy array to list for JSON serialization
+    except Exception as e:
+        print(f"⚠️  Error generating embedding for {image_path}: {e}")
+        return None
+
+def extract_image_references(wikitext):
+    """Extract image references from MediaWiki markup"""
+    images = []
+    try:
+        parsed = mwparserfromhell.parse(wikitext)
+        for wikilink in parsed.filter_wikilinks():
+            title = str(wikilink.title).strip()
+            if title.lower().startswith(('file:', 'image:')):
+                # Remove namespace prefix
+                image_name = title[5:] if title.lower().startswith('file:') else title[6:]
+                images.append(image_name)
+        
+        # Also look for direct image references in templates
+        for template in parsed.filter_templates():
+            for param in template.params:
+                param_value = str(param.value).strip()
+                if param_value.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp')):
+                    images.append(param_value)
+    except Exception as e:
+        print(f"⚠️  Error extracting images: {e}")
+    
+    return list(set(images))  # Remove duplicates
+
+def download_image(image_name, images_dir):
+    """Download an image from Memory Alpha and save it locally"""
+    global downloaded_images
+    
+    # Create a safe filename
+    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', image_name)
+    local_path = os.path.join(images_dir, safe_name)
+    
+    # Check if already downloaded
+    with download_lock:
+        if safe_name in downloaded_images:
+            return local_path, None  # Return None for URL since we don't know which worked
+        downloaded_images.add(safe_name)
+    
+    try:
+        # Skip external URLs (not hosted on Memory Alpha)
+        if image_name.startswith(('http://', 'https://')):
+            print(f"⚠️  Skipping external URL: {image_name}")
+            return None, None
+            
+        # Memory Alpha uses the standard MediaWiki file URL structure
+        # First, we need to encode the filename properly
+        encoded_name = quote(image_name.replace(' ', '_'))
+        
+        # Try multiple URL patterns for Memory Alpha
+        url_patterns = [
+            f"https://memory-alpha.fandom.com/wiki/Special:FilePath/{encoded_name}",
+            f"https://static.wikia.nocookie.net/memoryalpha/images/{encoded_name}",
+        ]
+        
+        for image_url in url_patterns:
+            try:
+                # Download the image
+                response = requests.get(image_url, timeout=30, stream=True)
+                if response.status_code == 200:
+                    with open(local_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    return local_path, image_url  # Return the working URL
+                elif response.status_code == 404:
+                    continue  # Try next URL pattern
+                else:
+                    print(f"⚠️  HTTP {response.status_code} for {image_url}")
+                    continue
+            except requests.RequestException as e:
+                print(f"⚠️  Request error for {image_url}: {e}")
+                continue
+        
+        print(f"⚠️  Failed to download image {image_name}: No working URL found")
+        return None, None
+            
+    except Exception as e:
+        print(f"⚠️  Error downloading image {image_name}: {e}")
+        return None, None
 
 def process_page(page_elem):
     """Process a single page element and return the processed data"""
@@ -46,6 +165,41 @@ def process_page(page_elem):
                                  "template talk:", "category:", "category talk:"))):
         return None
     
+    # Extract image references before parsing
+    image_references = extract_image_references(raw_text)
+    downloaded_image_paths = []
+    
+    # Download images and generate embeddings
+    for image_name in image_references[:5]:  # Limit to 5 images per page to avoid overwhelming
+        try:
+            image_path, actual_url = download_image(image_name, IMAGES_DIR)
+            if image_path and os.path.exists(image_path):
+                # Generate embedding
+                embedding = generate_image_embedding(image_path)
+                if embedding:
+                    # Use the actual working URL or fallback to Special:FilePath
+                    if not actual_url:
+                        encoded_name = quote(image_name.replace(' ', '_'))
+                        actual_url = f"https://memory-alpha.fandom.com/wiki/Special:FilePath/{encoded_name}"
+                    
+                    downloaded_image_paths.append({
+                        'name': image_name,
+                        'url': actual_url,  # Store the actual working URL
+                        'embedding': embedding,
+                        'local_path': image_path  # Keep for now, will delete after processing
+                    })
+                
+                # Delete the local image file to save space
+                try:
+                    if os.path.exists(image_path):
+                        os.remove(image_path)
+                except Exception as e:
+                    print(f"⚠️  Error deleting image {image_path}: {e}")
+                    
+        except Exception as e:
+            print(f"⚠️  Error processing image {image_name}: {e}")
+            continue
+    
     try:
         clean_text = mwparserfromhell.parse(raw_text).strip_code().strip()
     except Exception as e:
@@ -55,10 +209,11 @@ def process_page(page_elem):
     if len(clean_text) < 500:
         return None
 
-    # Return the processed data
+    # Return the processed data with image information
     return {
         'title': title,
-        'clean_text': clean_text
+        'clean_text': clean_text,
+        'images': downloaded_image_paths
     }
 
 def add_batch_to_collection(collection, batch_data):
@@ -69,27 +224,109 @@ def add_batch_to_collection(collection, batch_data):
     batch_metadatas = []
     batch_ids = []
     
+    # Separate lists for image documents
+    image_docs = []
+    image_metadatas = []
+    image_ids = []
+    image_embeddings = []
+    
     with count_lock:
         for data in batch_data:
+            # Add text document
             base_id = re.sub(r'[^a-zA-Z0-9_\-]', '_', data['title'])[:48] or "untitled"
             safe_id = f"{base_id}_{global_count}"
             batch_ids.append(safe_id)
             batch_docs.append(data['clean_text'])
-            batch_metadatas.append({"title": data['title']})
+            
+            # Include image information in metadata (ChromaDB only supports str, int, float, bool, None)
+            images = data.get('images', [])
+            metadata = {
+                "title": data['title'],
+                "content_type": "text",
+                "image_count": len(images),
+                "image_names": "; ".join([img['name'] for img in images]) if images else ""
+            }
+            batch_metadatas.append(metadata)
             global_count += 1
+            
+            # Add separate documents for each image
+            for img in images:
+                if img.get('embedding'):
+                    img_id = f"{base_id}_img_{global_count}"
+                    image_ids.append(img_id)
+                    
+                    # Create a text description for the image document
+                    image_doc = f"Image: {img['name']} from page '{data['title']}'"
+                    image_docs.append(image_doc)
+                    
+                    img_metadata = {
+                        "title": f"Image: {img['name']}",
+                        "content_type": "image", 
+                        "source_page": data['title'],
+                        "image_name": img['name'],
+                        "image_url": img['url']
+                    }
+                    image_metadatas.append(img_metadata)
+                    image_embeddings.append(img['embedding'])
+                    global_count += 1
     
+    # Add text documents to collection
     with collection_lock:
-        collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
+        if batch_docs:
+            collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
+        
+        # Add image documents with their embeddings
+        if image_docs:
+            collection.add(
+                documents=image_docs, 
+                metadatas=image_metadatas, 
+                ids=image_ids,
+                embeddings=image_embeddings
+            )
     
-    return len(batch_data)
+    return len(batch_data), len(image_docs)
 
 def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
     global global_count
     global_count = 0
     
+    # Initialize CLIP model early
+    clip_model = initialize_clip_model()
+    
     # Set up ChromaDB persistent client and collection
     client = chromadb.PersistentClient(path=chroma_db_dir, settings=Settings(allow_reset=True))
-    collection = client.get_or_create_collection("memoryalpha")
+    
+    # Create collection with CLIP embedding function for consistent dimensions
+    from chromadb.utils import embedding_functions
+    
+    # Create a custom embedding function that uses our CLIP model
+    class CLIPEmbeddingFunction(embedding_functions.EmbeddingFunction):
+        def __call__(self, input):
+            """Generate embeddings using CLIP model"""
+            embeddings = []
+            for text in input:
+                with embedding_lock:
+                    embedding = clip_model.encode(text)
+                embeddings.append(embedding.tolist())
+            return embeddings
+    
+    clip_ef = CLIPEmbeddingFunction()
+    
+    try:
+        # Try to delete existing collection to ensure clean state with new embedding function
+        try:
+            client.delete_collection("memoryalpha")
+            print("🗑️  Deleted existing collection to recreate with CLIP embeddings")
+        except:
+            pass
+        
+        collection = client.create_collection("memoryalpha", embedding_function=clip_ef)
+        print("📚 Created new ChromaDB collection with CLIP embeddings")
+    except Exception as e:
+        print(f"⚠️  Error creating collection: {e}")
+        # Fallback: try to get existing collection
+        collection = client.get_collection("memoryalpha", embedding_function=clip_ef)
+        print("📚 Using existing ChromaDB collection with CLIP embeddings")
 
     # Determine optimal number of workers
     num_workers = multiprocessing.cpu_count()
@@ -102,6 +339,7 @@ def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
     
     page_batch = []
     total_processed = 0
+    total_image_docs = 0
     
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         for _, elem in context:
@@ -125,9 +363,11 @@ def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
                     processed_data = processed_data[BATCH_SIZE:]
                     
                     if current_batch:
-                        added_count = add_batch_to_collection(collection, current_batch)
+                        added_count, added_images = add_batch_to_collection(collection, current_batch)
                         total_processed += added_count
-                        print(f"📄 Processed {total_processed} pages...")
+                        total_image_docs += added_images
+                        
+                        print(f"📄 Processed {total_processed} pages, {total_image_docs} image documents, downloaded {len(downloaded_images)} unique images...")
                 
                 # Clear processed pages
                 for page in page_batch:
@@ -159,14 +399,16 @@ def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
                 processed_data = processed_data[BATCH_SIZE:]
                 
                 if current_batch:
-                    added_count = add_batch_to_collection(collection, current_batch)
+                    added_count, added_images = add_batch_to_collection(collection, current_batch)
                     total_processed += added_count
+                    total_image_docs += added_images
             
             # Clear remaining pages
             for page in page_batch:
                 page.clear()
 
-    print(f"✅ Extracted and stored {total_processed} pages in ChromaDB at: {chroma_db_dir}")
+    print(f"✅ Extracted and stored {total_processed} pages and {total_image_docs} image documents in ChromaDB at: {chroma_db_dir}")
+    print(f"🖼️  Processed {len(downloaded_images)} unique images with CLIP embeddings")
 
 # Run it
 extract_and_store_chromadb(INPUT_XML, CHROMA_DB_DIR, MAX_PAGES)
