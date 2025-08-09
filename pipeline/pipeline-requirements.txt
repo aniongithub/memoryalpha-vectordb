@@ -1,5 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.3.0
+torchvision==0.18.0
 lxml==6.0.0
 mwparserfromhell==0.7.2
 chromadb==1.0.15

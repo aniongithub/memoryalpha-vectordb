@@ -43,32 +43,51 @@ embedding_lock = Lock()
 global_count = 0
 downloaded_images = set()  # Track downloaded images to avoid duplicates
 clip_model = None  # Will be initialized once
+text_model = None  # Will be initialized once
 
 def initialize_clip_model():
-    """Initialize the CLIP model once"""
+    """Initialize the CLIP model once, using a fast image processor"""
     global clip_model
     if clip_model is None:
         print("🤖 Loading CLIP model...")
-        clip_model = SentenceTransformer('clip-ViT-B-32')
+        clip_model = SentenceTransformer('clip-ViT-B-32', tokenizer_kwargs={'use_fast': True})
         print("✅ CLIP model loaded")
     return clip_model
+
+def initialize_text_model():
+    """Initialize the all-MiniLM-L6-v2 model once"""
+    global text_model
+    if text_model is None:
+        print("🤖 Loading all-MiniLM-L6-v2 model...")
+        text_model = SentenceTransformer('all-MiniLM-L6-v2')
+        print("✅ MiniLM model loaded")
+    return text_model
 
 def generate_image_embedding(image_path):
     """Generate CLIP embedding for an image"""
     try:
         model = initialize_clip_model()
-        
         # Skip SVG files as PIL can't handle them well
         if image_path.lower().endswith('.svg'):
             print(f"⚠️  Skipping SVG file: {image_path}")
             return None
-            
         image = Image.open(image_path).convert('RGB')
         with embedding_lock:
             embedding = model.encode(image)
         return embedding.tolist()  # Convert numpy array to list for JSON serialization
     except Exception as e:
         print(f"⚠️  Error generating embedding for {image_path}: {e}")
+        return None
+
+def generate_text_embedding(text):
+    """Generate MiniLM embedding for text"""
+    try:
+        model = initialize_text_model()
+        with embedding_lock:
+            embedding = model.encode(text)
+        return embedding.tolist()
+    except Exception as e:
+        print(f"⚠️  Error generating text embedding: {e}")
         return None
 
 def extract_image_references(wikitext):
@@ -216,20 +235,20 @@ def process_page(page_elem):
         'images': downloaded_image_paths
     }
 
-def add_batch_to_collection(collection, batch_data):
-    """Add a batch of processed data to ChromaDB collection"""
+def add_batch_to_collections(text_collection, image_collection, batch_data):
+    """Add a batch of processed data to separate ChromaDB collections"""
     global global_count
-    
+
     batch_docs = []
     batch_metadatas = []
     batch_ids = []
-    
-    # Separate lists for image documents
+    batch_embeddings = []
+
     image_docs = []
     image_metadatas = []
     image_ids = []
     image_embeddings = []
-    
+
     with count_lock:
         for data in batch_data:
             # Add text document
@@ -237,8 +256,10 @@ def add_batch_to_collection(collection, batch_data):
             safe_id = f"{base_id}_{global_count}"
             batch_ids.append(safe_id)
             batch_docs.append(data['clean_text'])
-            
-            # Include image information in metadata (ChromaDB only supports str, int, float, bool, None)
+            # Generate text embedding
+            text_embedding = generate_text_embedding(data['clean_text'])
+            batch_embeddings.append(text_embedding)
+
             images = data.get('images', [])
             metadata = {
                 "title": data['title'],
@@ -248,20 +269,17 @@ def add_batch_to_collection(collection, batch_data):
             }
             batch_metadatas.append(metadata)
             global_count += 1
-            
+
             # Add separate documents for each image
             for img in images:
                 if img.get('embedding'):
                     img_id = f"{base_id}_img_{global_count}"
                     image_ids.append(img_id)
-                    
-                    # Create a text description for the image document
                     image_doc = f"Image: {img['name']} from page '{data['title']}'"
                     image_docs.append(image_doc)
-                    
                     img_metadata = {
                         "title": f"Image: {img['name']}",
-                        "content_type": "image", 
+                        "content_type": "image",
                         "source_page": data['title'],
                         "image_name": img['name'],
                         "image_url": img['url']
@@ -269,141 +287,125 @@ def add_batch_to_collection(collection, batch_data):
                     image_metadatas.append(img_metadata)
                     image_embeddings.append(img['embedding'])
                     global_count += 1
-    
-    # Add text documents to collection
+
+    # Add text documents to text collection
     with collection_lock:
         if batch_docs:
-            collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids)
-        
-        # Add image documents with their embeddings
+            text_collection.add(documents=batch_docs, metadatas=batch_metadatas, ids=batch_ids, embeddings=batch_embeddings)
+        # Add image documents to image collection
         if image_docs:
-            collection.add(
-                documents=image_docs, 
-                metadatas=image_metadatas, 
-                ids=image_ids,
-                embeddings=image_embeddings
-            )
-    
+            image_collection.add(documents=image_docs, metadatas=image_metadatas, ids=image_ids, embeddings=image_embeddings)
+
     return len(batch_data), len(image_docs)
 
 def extract_and_store_chromadb(xml_path, chroma_db_dir, max_pages = -1):
     global global_count
     global_count = 0
-    
-    # Initialize CLIP model early
+
+    # Initialize models early
     clip_model = initialize_clip_model()
-    
-    # Set up ChromaDB persistent client and collection
+    text_model = initialize_text_model()
+
+    # Set up ChromaDB persistent client and collections
     client = chromadb.PersistentClient(path=chroma_db_dir, settings=Settings(allow_reset=True))
-    
-    # Create collection with CLIP embedding function for consistent dimensions
     from chromadb.utils import embedding_functions
-    
-    # Create a custom embedding function that uses our CLIP model
+
+    # CLIP embedding function for images
     class CLIPEmbeddingFunction(embedding_functions.EmbeddingFunction):
         def __call__(self, input):
-            """Generate embeddings using CLIP model"""
             embeddings = []
             for text in input:
                 with embedding_lock:
                     embedding = clip_model.encode(text)
                 embeddings.append(embedding.tolist())
             return embeddings
-    
+
+    # MiniLM embedding function for text
+    class MiniLMEmbeddingFunction(embedding_functions.EmbeddingFunction):
+        def __call__(self, input):
+            embeddings = []
+            for text in input:
+                with embedding_lock:
+                    embedding = text_model.encode(text)
+                embeddings.append(embedding.tolist())
+            return embeddings
+
     clip_ef = CLIPEmbeddingFunction()
-    
+    minilm_ef = MiniLMEmbeddingFunction()
+
+    # Create or reset collections
     try:
-        # Try to delete existing collection to ensure clean state with new embedding function
         try:
-            client.delete_collection("memoryalpha")
-            print("🗑️  Deleted existing collection to recreate with CLIP embeddings")
+            client.delete_collection("memoryalpha_text")
+            print("🗑️  Deleted existing text collection")
         except:
             pass
-        
-        collection = client.create_collection("memoryalpha", embedding_function=clip_ef)
-        print("📚 Created new ChromaDB collection with CLIP embeddings")
+        try:
+            client.delete_collection("memoryalpha_images")
+            print("🗑️  Deleted existing image collection")
+        except:
+            pass
+        text_collection = client.create_collection("memoryalpha_text", embedding_function=minilm_ef)
+        image_collection = client.create_collection("memoryalpha_images", embedding_function=clip_ef)
+        print("📚 Created new ChromaDB collections for text and images")
     except Exception as e:
-        print(f"⚠️  Error creating collection: {e}")
-        # Fallback: try to get existing collection
-        collection = client.get_collection("memoryalpha", embedding_function=clip_ef)
-        print("📚 Using existing ChromaDB collection with CLIP embeddings")
+        print(f"⚠️  Error creating collections: {e}")
+        text_collection = client.get_collection("memoryalpha_text", embedding_function=minilm_ef)
+        image_collection = client.get_collection("memoryalpha_images", embedding_function=clip_ef)
+        print("📚 Using existing ChromaDB collections for text and images")
 
-    # Determine optimal number of workers
     num_workers = multiprocessing.cpu_count()
     print(f"🚀 Using {num_workers} worker threads for processing")
-    
+
     context = etree.iterparse(xml_path, tag="{http://www.mediawiki.org/xml/export-0.11/}page", events=("end",), recover=True)
-    
+
     BATCH_SIZE = 100
-    PROCESSING_BATCH_SIZE = num_workers * 4  # Process multiple batches in parallel
-    
+    PROCESSING_BATCH_SIZE = num_workers * 4
+
     page_batch = []
     total_processed = 0
     total_image_docs = 0
-    
+
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         for _, elem in context:
             page_batch.append(elem)
-            
-            # Process pages in batches
             if len(page_batch) >= PROCESSING_BATCH_SIZE:
-                # Submit batch for parallel processing
                 future_results = [executor.submit(process_page, page) for page in page_batch]
-                
-                # Collect results
                 processed_data = []
                 for future in future_results:
                     result = future.result()
                     if result:
                         processed_data.append(result)
-                
-                # Add to ChromaDB in batches
                 while processed_data:
                     current_batch = processed_data[:BATCH_SIZE]
                     processed_data = processed_data[BATCH_SIZE:]
-                    
                     if current_batch:
-                        added_count, added_images = add_batch_to_collection(collection, current_batch)
+                        added_count, added_images = add_batch_to_collections(text_collection, image_collection, current_batch)
                         total_processed += added_count
                         total_image_docs += added_images
-                        
                         print(f"📄 Processed {total_processed} pages, {total_image_docs} image documents, downloaded {len(downloaded_images)} unique images...")
-                
-                # Clear processed pages
                 for page in page_batch:
                     page.clear()
                 page_batch = []
-                
-                # Check if we've reached the max pages limit
                 if max_pages != -1 and total_processed >= max_pages:
                     break
-        
-        # Process remaining pages
         if page_batch and (max_pages == -1 or total_processed < max_pages):
             future_results = [executor.submit(process_page, page) for page in page_batch]
-            
             processed_data = []
             for future in future_results:
                 result = future.result()
                 if result:
                     processed_data.append(result)
-            
-            # Limit to max_pages if specified
             if max_pages != -1:
                 remaining = max_pages - total_processed
                 processed_data = processed_data[:remaining]
-            
-            # Add remaining data in batches
             while processed_data:
                 current_batch = processed_data[:BATCH_SIZE]
                 processed_data = processed_data[BATCH_SIZE:]
-                
                 if current_batch:
-                    added_count, added_images = add_batch_to_collection(collection, current_batch)
+                    added_count, added_images = add_batch_to_collections(text_collection, image_collection, current_batch)
                     total_processed += added_count
                     total_image_docs += added_images
-            
-            # Clear remaining pages
             for page in page_batch:
                 page.clear()
 
