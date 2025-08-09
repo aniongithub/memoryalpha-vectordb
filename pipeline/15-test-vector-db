@@ -11,25 +11,119 @@ from chromadb.config import Settings
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHROMA_DB_DIR = os.path.join(SCRIPT_DIR, "../data/enmemoryalpha_db")
 
-# Try to connect to the persistent ChromaDB
+# Try to connect to the persistent ChromaDB and test both collections
 try:
     client = chromadb.PersistentClient(path=CHROMA_DB_DIR, settings=Settings(allow_reset=True))
-    collection = client.get_or_create_collection("memoryalpha")
-    count = collection.count()
-    print(f"✅ ChromaDB loaded successfully. Document count: {count}")
     import random
-    if count > 0:
-        # Get all documents to pick a random one
-        all_docs = collection.get(include=["metadatas", "documents"])
-        rand_index = random.randint(0, len(all_docs['ids']) - 1)
-        result_id = all_docs['ids'][rand_index]
-        result_metadata = all_docs['metadatas'][rand_index]
-        result_document = all_docs['documents'][rand_index]
-        print(f"Random doc ID: {result_id}")
-        print(f"Random doc title: {result_metadata.get('title', 'N/A')}")
-        print(f"Random doc content: {result_document}")
+
+    # Test text collection with retrieval
+    text_collection = client.get_or_create_collection("memoryalpha_text")
+    text_count = text_collection.count()
+    print(f"✅ Text collection loaded. Document count: {text_count}")
+    if text_count > 0:
+        all_text_docs = text_collection.get(include=["metadatas", "documents"])
+        rand_index = random.randint(0, len(all_text_docs['ids']) - 1)
+        result_id = all_text_docs['ids'][rand_index]
+        result_metadata = all_text_docs['metadatas'][rand_index]
+        result_document = all_text_docs['documents'][rand_index]
+        print(f"Random text doc ID: {result_id}")
+        print(f"Random text doc title: {result_metadata.get('title', 'N/A')}")
+        print(f"Random text doc content: {result_document[:300]}...\n")
+
+        # Pick a random part of the article for search
+        SAMPLE_CHAR_LENGTH = 200
+        if len(result_document) > SAMPLE_CHAR_LENGTH:
+            start = random.randint(0, len(result_document) - SAMPLE_CHAR_LENGTH)
+            search_text = result_document[start:start+SAMPLE_CHAR_LENGTH]
+        else:
+            search_text = result_document
+        print(f"🔎 Search text sample:\n{search_text}\n")
+
+        # Use all-MiniLM-L6-v2 for query embedding
+        from sentence_transformers import SentenceTransformer
+        print("🤖 Loading all-MiniLM-L6-v2 model for query embedding...")
+        text_model = SentenceTransformer('all-MiniLM-L6-v2')
+        print("✅ MiniLM model loaded.")
+        query_embedding = text_model.encode(search_text)
+
+        TOP_K = 5
+        search_results = text_collection.query(
+            query_embeddings=[query_embedding],
+            n_results=TOP_K
+        )
+
+        retrieved_docs = search_results["documents"][0]
+        retrieved_metas = search_results["metadatas"][0]
+        retrieved_ids = search_results["ids"][0]
+        retrieved_distances = search_results["distances"][0]
+
+        print("Results:")
+        for i, (doc, meta, doc_id, dist) in enumerate(zip(retrieved_docs, retrieved_metas, retrieved_ids, retrieved_distances)):
+            print(f"\n{i+1}. Title: {meta.get('title', doc_id)}")
+            print(f"   Similarity Score: {1-dist:.4f}")
+            print(f"   Preview: {doc[:150]}...")
     else:
-        print("⚠️  No documents found in the collection.")
+        print("⚠️  No documents found in the text collection.")
+        raise Exception("No documents in text collection")
+
+    # Test image collection with retrieval
+    image_collection = client.get_or_create_collection("memoryalpha_images")
+    image_count = image_collection.count()
+    print(f"✅ Image collection loaded. Document count: {image_count}")
+    if image_count > 0:
+        from sentence_transformers import SentenceTransformer
+        from PIL import Image
+        import requests
+        import io
+
+        # Find test images
+        test_images_dir = os.path.join(SCRIPT_DIR, "test-images")
+        if not os.path.isdir(test_images_dir):
+            print(f"⚠️  Test images directory not found: {test_images_dir}")
+        else:
+            test_images = [f for f in os.listdir(test_images_dir) if f.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))]
+            if not test_images:
+                print(f"⚠️  No test images found in {test_images_dir}")
+            else:
+                rand_img_name = random.choice(test_images)
+                rand_img_path = os.path.join(test_images_dir, rand_img_name)
+                print(f"🔍 Using test image: {rand_img_path}")
+
+                # Load and embed the image
+                print("🤖 Loading CLIP model for image query embedding...")
+                clip_model = SentenceTransformer('clip-ViT-B-32')
+                print("✅ CLIP model loaded.")
+                try:
+                    img = Image.open(rand_img_path).convert('RGB')
+                    query_embedding = clip_model.encode(img)
+                except Exception as e:
+                    print(f"❌ Failed to load or embed test image: {e}")
+                    sys.exit(1)
+
+                TOP_K = 5
+                search_results = image_collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=TOP_K
+                )
+
+                retrieved_docs = search_results["documents"][0]
+                retrieved_metas = search_results["metadatas"][0]
+                retrieved_ids = search_results["ids"][0]
+                retrieved_distances = search_results["distances"][0]
+
+                print("Image search results:")
+                print("Image search results:")
+                for i, (doc, meta, doc_id, dist) in enumerate(zip(retrieved_docs, retrieved_metas, retrieved_ids, retrieved_distances)):
+                    print(f"\n{i+1}. Title: {meta.get('title', doc_id)}")
+                    print(f"   Similarity Score: {1-dist:.4f}")
+                    print(f"   Preview: {doc}")
+                    img_url = meta.get('image_url')
+                    if img_url:
+                        print(f"   Image URL: {img_url}")
+    else:
+        print("⚠️  No documents found in the image collection.")
+        raise Exception("No documents in image collection")
+
 except Exception as e:
     print(f"❌ Failed to load or query ChromaDB: {e}")
     sys.exit(1)
