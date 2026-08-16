@@ -8,6 +8,10 @@ set -euo pipefail
 # Set to -1 to process all pages.
 MAX_PAGES="${MAX_PAGES:-100}"
 
+# Tier 2 strict canon filtering is on by default (embed only in-universe canon
+# articles). Set CANON_ONLY=0 to ingest all articles, including real-world pages.
+CANON_ONLY="${CANON_ONLY:-1}"
+
 pushd "$SCRIPT_DIR"
 trap popd EXIT
 
@@ -20,4 +24,4 @@ else
   DOCKER_RUN_FLAGS=""
 fi
 
-docker run --rm $DOCKER_RUN_FLAGS -e MAX_PAGES="$MAX_PAGES" -v "$SCRIPT_DIR/data":/data memoryalpha-pipeline
+docker run --rm $DOCKER_RUN_FLAGS -e MAX_PAGES="$MAX_PAGES" -e CANON_ONLY="$CANON_ONLY" -v "$SCRIPT_DIR/data":/data memoryalpha-pipeline

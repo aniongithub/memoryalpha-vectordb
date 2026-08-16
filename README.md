@@ -7,6 +7,7 @@ This repository provides a reproducible pipeline for downloading, parsing, and p
 ## Features
 
 - **Automated Data Pipeline**: Download, extract, and process the latest Memory Alpha XML dump
+- **Canon-only ingestion (Tier 2 strict)**: Embeds only in-universe canon articles; all real-world / non-canon pages (episodes, films, novels, comics, video games, reference books, actors, staff, non-canon character pages) are skipped
 - **ChromaDB Vector Database**: Converts all articles into a persistent ChromaDB vector DB
 - **Compressed Artifact**: Publishes a compressed, ready-to-use DB for easy distribution
 - **CI/CD Workflows**: GitHub Actions for validation and release artifact publishing
@@ -89,7 +90,7 @@ You can now use `data/enmemoryalpha_db.tar.gz` in your own projects. Decompress 
 memoryalpha_rag/
 ├── pipeline/                  # Data processing pipeline scripts
 │   ├── 00-download-memory-alpha      # Download Memory Alpha dump
-│   ├── 10-extract-memoryalpha-data   # Parse and create ChromaDB
+│   ├── 10-extract-memoryalpha-data   # Parse, canon-filter, and create ChromaDB
 │   ├── 20-compress-memoryalpha-db    # Compress database
 │   └── pipeline.Dockerfile           # Pipeline container
 ├── data/                      # Data directory (gitignored)
@@ -99,6 +100,29 @@ memoryalpha_rag/
 ├── data-pipeline-docker.sh    # Pipeline execution script
 ├── .github/workflows/         # CI/CD workflows
 └── README.md                  # This file
+```
+
+## Canon Filtering
+
+By default the pipeline performs **Tier 2 strict canon filtering**: only
+in-universe (canon) articles are embedded into the vector database.
+
+Memory Alpha tags every real-world / non-canon article with the `{{real world}}`
+template (also spelled `{{realworld}}`) at the top of its wikitext, and non-canon
+character pages with `{{Non canon character page}}`. In-universe canon articles
+do not carry these markers. During extraction (`pipeline/10-extract-memoryalpha-data`),
+any page whose wikitext contains one of these templates is skipped **before** any
+image download or embedding work — so episodes, films, novels, comics, video
+games, reference books, actor/staff pages, and non-canon character pages are all
+excluded. This keeps retrieval focused on in-universe content (e.g. "Who is
+Captain Picard?" returns his in-universe biography rather than novels or
+reference books).
+
+To disable the filter and ingest every article (legacy behavior), set the
+`CANON_ONLY` environment variable to `0`:
+
+```bash
+CANON_ONLY=0 ./data-pipeline-docker.sh
 ```
 
 ## CI/CD
