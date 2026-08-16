@@ -45,6 +45,17 @@ MAX_PAGES = int(os.getenv("MAX_PAGES", -1)) # Get the max pages to process from 
 CANON_ONLY = os.getenv("CANON_ONLY", "1").lower() not in ("0", "false", "no")
 NONCANON_MARKERS = {"real world", "realworld", "non canon character page"}
 
+# Fandom/Cloudflare returns HTTP 403 to requests that lack a browser-like
+# User-Agent, which silently empties the image collection. Send a realistic
+# User-Agent (overridable via IMAGE_USER_AGENT) so Special:FilePath image
+# downloads succeed.
+IMAGE_USER_AGENT = os.getenv(
+    "IMAGE_USER_AGENT",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+)
+REQUEST_HEADERS = {"User-Agent": IMAGE_USER_AGENT}
+
 # Global variables for thread coordination
 collection_lock = Lock()
 count_lock = Lock()
@@ -157,7 +168,7 @@ def download_image(image_name, images_dir):
         for image_url in url_patterns:
             try:
                 # Download the image
-                response = requests.get(image_url, timeout=30, stream=True)
+                response = requests.get(image_url, timeout=30, stream=True, headers=REQUEST_HEADERS)
                 if response.status_code == 200:
                     with open(local_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
