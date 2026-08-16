@@ -35,6 +35,16 @@ os.makedirs(IMAGES_DIR, exist_ok=True)
 
 MAX_PAGES = int(os.getenv("MAX_PAGES", -1)) # Get the max pages to process from the environment and cast to int
 
+# Tier 2 strict canon filtering: Memory Alpha tags every real-world / non-canon
+# article (novels, comics, video games, reference books, actors, staff,
+# episodes, films, non-canon character pages) with the {{real world}} template
+# (also spelled {{realworld}}) at the top of its wikitext. In-universe canon
+# articles do NOT carry this template. When CANON_ONLY is enabled (default), any
+# page whose wikitext contains one of these markers is skipped so that only pure
+# in-universe canon is embedded into the vector DB.
+CANON_ONLY = os.getenv("CANON_ONLY", "1").lower() not in ("0", "false", "no")
+NONCANON_MARKERS = {"real world", "realworld", "non canon character page"}
+
 # Global variables for thread coordination
 collection_lock = Lock()
 count_lock = Lock()
@@ -90,11 +100,12 @@ def generate_text_embedding(text):
         print(f"⚠️  Error generating text embedding: {e}")
         return None
 
-def extract_image_references(wikitext):
+def extract_image_references(wikitext, parsed=None):
     """Extract image references from MediaWiki markup"""
     images = []
     try:
-        parsed = mwparserfromhell.parse(wikitext)
+        if parsed is None:
+            parsed = mwparserfromhell.parse(wikitext)
         for wikilink in parsed.filter_wikilinks():
             title = str(wikilink.title).strip()
             if title.lower().startswith(('file:', 'image:')):
@@ -183,9 +194,29 @@ def process_page(page_elem):
                                  "mediawiki:", "mediawiki talk:", "template:", 
                                  "template talk:", "category:", "category talk:"))):
         return None
-    
+
+    # Parse the wikitext once and reuse it for canon filtering, image
+    # extraction, and code stripping below.
+    try:
+        parsed = mwparserfromhell.parse(raw_text)
+    except Exception as e:
+        print(f"⚠️  Error parsing {title}: {e}")
+        return None
+
+    # Tier 2 strict canon filter: drop any page tagged as real-world / non-canon
+    # (episodes, films, novels, comics, games, reference books, actors, staff,
+    # non-canon character pages) before doing any expensive image download or
+    # embedding work. Only in-universe canon articles are embedded.
+    if CANON_ONLY:
+        tmpl_names = {
+            str(t.name).strip().lower().replace("_", " ")
+            for t in parsed.filter_templates()
+        }
+        if tmpl_names & NONCANON_MARKERS:
+            return None
+
     # Extract image references before parsing
-    image_references = extract_image_references(raw_text)
+    image_references = extract_image_references(raw_text, parsed=parsed)
     downloaded_image_paths = []
     
     # Download images and generate embeddings
@@ -220,7 +251,7 @@ def process_page(page_elem):
             continue
     
     try:
-        clean_text = mwparserfromhell.parse(raw_text).strip_code().strip()
+        clean_text = parsed.strip_code().strip()
     except Exception as e:
         print(f"⚠️  Error parsing {title}: {e}")
         return None
