@@ -45,16 +45,26 @@ MAX_PAGES = int(os.getenv("MAX_PAGES", -1)) # Get the max pages to process from 
 CANON_ONLY = os.getenv("CANON_ONLY", "1").lower() not in ("0", "false", "no")
 NONCANON_MARKERS = {"real world", "realworld", "non canon character page"}
 
-# Fandom/Cloudflare returns HTTP 403 to requests that lack a browser-like
-# User-Agent, which silently empties the image collection. Send a realistic
-# User-Agent (overridable via IMAGE_USER_AGENT) so Special:FilePath image
-# downloads succeed.
+# Image downloads: Memory Alpha's Special:FilePath endpoint sits behind
+# Cloudflare, which serves an HTTP 403 challenge to datacenter IPs (e.g. GitHub
+# Actions runners) regardless of headers, silently emptying the image
+# collection. However, the MediaWiki API (api.php) and the image CDN
+# (static.wikia.nocookie.net) are NOT challenged and remain reachable from those
+# same IPs. So instead of guessing Special:FilePath / CDN URLs, we ask the API
+# for each file's canonical imageinfo URL and download that directly from the
+# CDN. A browser-like User-Agent (overridable via IMAGE_USER_AGENT) is still
+# sent on every request as a courtesy / to avoid trivial bot filters.
 IMAGE_USER_AGENT = os.getenv(
     "IMAGE_USER_AGENT",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 )
 REQUEST_HEADERS = {"User-Agent": IMAGE_USER_AGENT}
+
+# MediaWiki API endpoint used to resolve File: names to real CDN image URLs.
+IMAGE_API_ENDPOINT = os.getenv(
+    "IMAGE_API_ENDPOINT", "https://memory-alpha.fandom.com/api.php"
+)
 
 # Global variables for thread coordination
 collection_lock = Lock()
@@ -65,6 +75,65 @@ global_count = 0
 downloaded_images = set()  # Track downloaded images to avoid duplicates
 clip_model = None  # Will be initialized once
 text_model = None  # Will be initialized once
+
+# Shared HTTP session (connection pooling + consistent headers) and a cache of
+# resolved image URLs so we only hit the API once per unique file name.
+_http_session = None
+_http_session_lock = Lock()
+_image_url_cache = {}
+_image_url_cache_lock = Lock()
+
+def get_http_session():
+    """Return a process-wide requests.Session with the browser User-Agent set."""
+    global _http_session
+    if _http_session is None:
+        with _http_session_lock:
+            if _http_session is None:
+                session = requests.Session()
+                session.headers.update(REQUEST_HEADERS)
+                _http_session = session
+    return _http_session
+
+def resolve_image_url(image_name):
+    """Resolve a File: name to its canonical CDN URL via the MediaWiki API.
+
+    Special:FilePath is Cloudflare-challenged (HTTP 403) from datacenter IPs, so
+    we query api.php (which is not challenged) for the file's imageinfo URL and
+    return that CDN link. Results are cached per unique name. Returns None if the
+    file can't be resolved (missing page, network error, etc.)."""
+    with _image_url_cache_lock:
+        if image_name in _image_url_cache:
+            return _image_url_cache[image_name]
+
+    resolved = None
+    try:
+        session = get_http_session()
+        params = {
+            "action": "query",
+            "titles": f"File:{image_name}",
+            "prop": "imageinfo",
+            "iiprop": "url",
+            "format": "json",
+            "formatversion": "2",
+        }
+        response = session.get(IMAGE_API_ENDPOINT, params=params, timeout=30)
+        if response.status_code == 200 and "json" in response.headers.get("Content-Type", ""):
+            pages = response.json().get("query", {}).get("pages", [])
+            # formatversion=2 returns a list; be tolerant of the legacy dict form.
+            page_iter = pages if isinstance(pages, list) else list(pages.values())
+            for page in page_iter:
+                imageinfo = page.get("imageinfo")
+                if imageinfo:
+                    resolved = imageinfo[0].get("url")
+                    break
+        else:
+            print(f"⚠️  API returned HTTP {response.status_code} resolving {image_name}")
+    except requests.RequestException as e:
+        print(f"⚠️  Error resolving image URL for {image_name}: {e}")
+
+    with _image_url_cache_lock:
+        _image_url_cache[image_name] = resolved
+    return resolved
 
 def initialize_clip_model():
     """Initialize the CLIP model once, using a fast image processor"""
@@ -154,38 +223,29 @@ def download_image(image_name, images_dir):
         if image_name.startswith(('http://', 'https://')):
             print(f"⚠️  Skipping external URL: {image_name}")
             return None, None
-            
-        # Memory Alpha uses the standard MediaWiki file URL structure
-        # First, we need to encode the filename properly
-        encoded_name = quote(image_name.replace(' ', '_'))
-        
-        # Try multiple URL patterns for Memory Alpha
-        url_patterns = [
-            f"https://memory-alpha.fandom.com/wiki/Special:FilePath/{encoded_name}",
-            f"https://static.wikia.nocookie.net/memoryalpha/images/{encoded_name}",
-        ]
-        
-        for image_url in url_patterns:
-            try:
-                # Download the image
-                response = requests.get(image_url, timeout=30, stream=True, headers=REQUEST_HEADERS)
-                if response.status_code == 200:
-                    with open(local_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    return local_path, image_url  # Return the working URL
-                elif response.status_code == 404:
-                    continue  # Try next URL pattern
-                else:
-                    print(f"⚠️  HTTP {response.status_code} for {image_url}")
-                    continue
-            except requests.RequestException as e:
-                print(f"⚠️  Request error for {image_url}: {e}")
-                continue
-        
-        print(f"⚠️  Failed to download image {image_name}: No working URL found")
-        return None, None
-            
+
+        # Resolve the real CDN URL via the API. Special:FilePath is Cloudflare-
+        # blocked (HTTP 403) from datacenter IPs, but the API and the resulting
+        # static.wikia.nocookie.net CDN link are reachable.
+        image_url = resolve_image_url(image_name)
+        if not image_url:
+            print(f"⚠️  Could not resolve URL for image {image_name}")
+            return None, None
+
+        try:
+            session = get_http_session()
+            response = session.get(image_url, timeout=30, stream=True)
+            if response.status_code == 200:
+                with open(local_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                return local_path, image_url  # Return the working URL
+            print(f"⚠️  HTTP {response.status_code} for {image_url}")
+            return None, None
+        except requests.RequestException as e:
+            print(f"⚠️  Request error for {image_url}: {e}")
+            return None, None
+
     except Exception as e:
         print(f"⚠️  Error downloading image {image_name}: {e}")
         return None, None
@@ -238,7 +298,9 @@ def process_page(page_elem):
                 # Generate embedding
                 embedding = generate_image_embedding(image_path)
                 if embedding:
-                    # Use the actual working URL or fallback to Special:FilePath
+                    # download_image now always returns the resolved CDN URL on
+                    # success; fall back to Special:FilePath only if it's somehow
+                    # missing so metadata always has a usable link.
                     if not actual_url:
                         encoded_name = quote(image_name.replace(' ', '_'))
                         actual_url = f"https://memory-alpha.fandom.com/wiki/Special:FilePath/{encoded_name}"
