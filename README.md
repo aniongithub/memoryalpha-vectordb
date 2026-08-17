@@ -125,6 +125,22 @@ To disable the filter and ingest every article (legacy behavior), set the
 CANON_ONLY=0 ./data-pipeline-docker.sh
 ```
 
+## Images
+
+Each embedded page also contributes up to a few images to a separate CLIP image
+collection. Memory Alpha's `Special:FilePath` endpoint sits behind Cloudflare,
+which serves an HTTP 403 challenge to datacenter IPs (including GitHub Actions
+runners), so it cannot be used to fetch images in CI. Instead the pipeline asks
+the MediaWiki API (`api.php`, which is not challenged) for each file's canonical
+image URL and downloads it directly from the image CDN
+(`static.wikia.nocookie.net`). Both the API and the CDN are reachable from
+datacenter IPs, so image embedding works in CI as well as locally.
+
+The API endpoint and request User-Agent can be overridden via the
+`IMAGE_API_ENDPOINT` and `IMAGE_USER_AGENT` environment variables. If an image
+can't be resolved or downloaded it is skipped; an empty image collection is a
+non-fatal warning and never blocks publishing a valid text database.
+
 ## CI/CD
 
 - **Pull Request to main**: Runs the pipeline as a CI check (no artifact published)
